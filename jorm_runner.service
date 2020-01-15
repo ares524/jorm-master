@@ -1,0 +1,14 @@
+[Unit]
+Description=Jormungandr node runner %I
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+User=cardano
+ExecStart=/usr/local/bin/jorm_runner.sh %i
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

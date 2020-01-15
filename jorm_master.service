@@ -1,0 +1,12 @@
+[Unit]
+Description=Jormungandr master
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+Restart=always
+ExecStart=/usr/local/bin/jorm_master.py
+
+[Install]
+WantedBy=multi-user.target
