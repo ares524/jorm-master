@@ -46,7 +46,6 @@ epoch_runner_kill_time = 30
 event_hibernate_time = 10
 # How long before an event happens it makes sense to start a new runner
 start_before_event_time = 300
-
 # ---------------------------------------------------------------------------------------------------------------------
 pooltool_endp = f'https://api.pooltool.io/v0/sharemytip?poolid={pool_id}&userid={user_id}&genesispref={genesis[:14]}&mytip='
 
@@ -75,9 +74,11 @@ class Status(IntEnum):
 class Runner:
     def __init__(self, id):
         self.id = id
+        self.boot_start_time = time()
+        self.boot_end_time = 0
+        self.booting = False
         self.__session = requests.Session()
         self.__rest = f'http://127.0.0.1:{port_prefix}{id}'
-        self.__boot_time = 0
 
     def __node_stats(self):
         """Return node stats in JSON format for a specific instance, will throw on error
@@ -103,18 +104,15 @@ class Runner:
         if force or status != Status.BOOT:
             logger.info(f'(Re)starting Jormungandr runner {self.id}')
             run(['systemctl', 'restart', f'jorm_runner@{self.id}.service'])
-            self.__boot_time = time()
+            self.boot_start_time = time()
+            self.booting = True
 
     def stop(self):
         """Stop Jormungandr runner
         """
         logger.info(f'Stopping Jormungandr runner {self.id}')
         run(['systemctl', 'stop', f'jorm_runner@{self.id}.service'])
-
-    def boot_time(self):
-        """Return time in seconds since the runner started
-        """
-        return self.__boot_time
+        self.booting = False
 
     def height(self):
         """Return current block height, or 0 if unavailable
@@ -274,6 +272,12 @@ def handle_near_events(runners, stats, events, epoch_end_time):
       - sleep until it is over
     """
     if not events:
+        # Leave only one runner without known events
+        if sum([s != Status.OFF for s in stats]) > 1:
+            leave_ix = stats.index(Status.ON) if Status.ON in stats else stats.index(Status.BOOT)
+            for ix, r in enumerate(runners):
+                if stats[ix] != Status.OFF and ix != leave_ix:
+                    r.stop()
         return
 
     curr_time = time()
@@ -282,9 +286,14 @@ def handle_near_events(runners, stats, events, epoch_end_time):
 
     # Stop bootstrapping runners in advance before event
     if time_remaining < event_stop_booting_time and Status.BOOT in stats:
+        # Leave one if none other are on
+        leave_booting_ix = -1
+        if not Status.ON in stats:
+            leave_booting_ix = stats.index(Status.BOOT) if Status.BOOT in stats else -1
+
         logger.info(f'Event ahead in {time_remaining} seconds, killing bootstrapping runners')
         for ix, r in enumerate(runners):
-            if stats[ix] == Status.BOOT:
+            if stats[ix] == Status.BOOT and ix != leave_booting_ix:
                 r.stop()
 
     # Kill all runners except one leader before epoch rollover
@@ -330,6 +339,7 @@ def main():
     epoch_end_time = None
 
     leader_events = []
+    events = []
 
     while True:
         # Update auxiliary variables
@@ -347,14 +357,22 @@ def main():
         # Make sure there is exactly one best behaving leader if possible
         one_best_leader(runners)
 
+        # Set boot_end_time to nodes that just turned the state to ON
+        for ix, r in enumerate(runners):
+            if stats[ix] == Status.ON and r.booting:
+                r.booting = False
+                r.boot_end_time = time()
+
         # Restart stuck runners
         for ix, r in enumerate(runners):
             # if the height difference from known maximum exceeded threshold
-            if stats[ix] == Status.ON and heights[ix] + max_height_delay < max(heights + [pt_major_max]):
+            known_max = max(heights + [pt_major_max])
+            if stats[ix] == Status.ON and heights[ix] + max_height_delay < known_max and safe_to_start(events) and time() - r.boot_end_time > 30:
+                logger.info(f'Jormungandr runner {ix} is stuck, local: {heights[ix]}, known max: {known_max}')
                 r.restart()
 
             # if the bootstrap process is taking too long
-            if stats[ix] == Status.BOOT and time() - r.boot_time() > max_boot_time:
+            if stats[ix] == Status.BOOT and time() - r.boot_start_time > max_boot_time:
                 r.restart(force=True)
 
         # Handle near events:
