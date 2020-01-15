@@ -387,7 +387,7 @@ def main():
             leader_events = None
 
         # Get settings values
-        if not epoch_end_time and runner_on:
+        if not epoch_end_time and runner_on is not None:
             block_0_time = block_0_time or runners[runner_on].block_0_time()
             slot_duration = slot_duration or runners[runner_on].slot_duration()
             slots_per_epoch = slots_per_epoch or runners[runner_on].slots_per_epoch()
@@ -395,7 +395,7 @@ def main():
             epoch_end_time = (epoch + 1) * slot_duration * slots_per_epoch + block_0_time - 1
 
         # Get schedule of leader events
-        if not leader_events and runner_on:
+        if not leader_events and runner_on is not None:
             leader_events = runners[runner_on].leader_events()
 
         # Start the rest of the runners if we know for sure there is enough time.
