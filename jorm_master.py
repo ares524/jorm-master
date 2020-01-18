@@ -172,8 +172,10 @@ class Runner:
         try:
             events = self.__session.get(f'{self.__rest}/api/v0/leaders/logs').json()
             for e in events:
-                res += [unix_time(e['scheduled_at_time'])]
-            logger.info(f'There are {len(res)} leader events scheduled for the current epoch')
+                event_time = unix_time(e['scheduled_at_time'])
+                if event_time > time():
+                    res += [event_time]
+            logger.info(f'There are {len(res)} leader events remaining in the current epoch')
         except:
             pass
 
@@ -341,6 +343,8 @@ def main():
     leader_events = []
     events = []
 
+    first_cycle = True
+
     while True:
         # Update auxiliary variables
         heights = [r.height() for r in runners]
@@ -353,6 +357,7 @@ def main():
         if all([s == Status.OFF for s in stats]):
             logger.info(f'All Jormungandr runners are off, starting one')
             runners[0].restart()
+            stats[0] = runners[0].status()
 
         # Make sure there is exactly one best behaving leader if possible
         one_best_leader(runners)
@@ -378,7 +383,8 @@ def main():
         # Handle near events:
         events = leader_events if leader_events else []
         events += [epoch_end_time] if epoch_end_time else []
-        handle_near_events(runners, stats, events, epoch_end_time)
+        if not first_cycle:
+            handle_near_events(runners, stats, events, epoch_end_time)
 
         # Reset variables after epoch rollover
         if epoch_end_time and time() > epoch_end_time:
@@ -407,6 +413,11 @@ def main():
 
         # Report max height to PoolTool
         pooltool.send_height(max(heights))
+
+        # Remove passed events
+        leader_events = [e for e in leader_events if e < time()]
+
+        first_cycle = False
 
         # Wait before next cycle
         sleep(2)
