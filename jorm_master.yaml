@@ -1,0 +1,38 @@
+---
+# Number of runners
+cnt_runners: 3
+# Node secret in YAML format for promoting a passive node to leadership
+node_secret: "/etc/cardano/node_secret.yaml"
+# Beginning digits of the REST API port, the last one is the runners ID
+rest_prefix: 310
+# Maximum allowed block height delay before restart
+max_offset: 5
+# How long will we wait for Jormungandr to finish bootstrapping before restarting
+max_boot: 900
+# How long before an event takes place stop the bootstrapping runners
+event_boot_stop: 30
+# How long before epoch rollover happens kill all runners except one
+epoch_kill: 30
+# How long before the event happens start hibernating
+event_hibernate: 10
+# How long before an event happens it makes sense to start a new runner
+start_before_event: 300
+# How long to allow runner to be behind after bootstrap to catch up
+boot_catch_up: 120
+
+# Settings related to PoolTool.io website
+pooltool:
+    # ID of your pool
+    pool_id: "<pool_id>"
+    # ID from PoolTool (in Profile section)
+    user_id: "<user_id>"
+    # Current genesis block hash
+    genesis: "8e4d2a343f3dcf9330ad9035b3e8d168e6728904262f2c434a4f8f934ec7b676"
+    # Minimal time before sending new block height tip
+    send_wait: 45
+    # Minimal time before requesting updated majority max
+    recv_wait: 30
+    # Share tip API endpoint
+    endp_tip: "https://api.pooltool.io/v0/sharemytip"
+    # Provided stats API endpoint
+    endp_stats: "https://pooltool.s3-us-west-2.amazonaws.com/stats/stats.json"
