@@ -1,5 +1,5 @@
 # jorm_master
-Jormungander master for running multiple node instances.
+Jormungander master for running multiple node instances with no adversarial forks guarantee.
 
 ## Setup
 
@@ -27,6 +27,11 @@ Jormungander master for running multiple node instances.
 
 ## Notes
 
-This setup with runners as SystemD units allows restarting the manager without having a downtime. The master will detect the runners on startup and continue with normal operations. This can be usefull on jorm_manager updates, or adjustments of the values in the config file.
+This setup with runners as SystemD units allows restarting the master without having a downtime. The master will detect the runners on startup and continue with normal operations. This can be usefull on jorm_master updates, or adjustments of the values in the config file.
 
-| If the number of runners is decreased, it is users responsibility to stop the remaining runners over the limit.
+| If the number of runners is decreased, it is users responsibility to stop the remaining runners over the limit. (`systemctl stop jorm_runner@N.service`).
+
+With the current implementation, the master shouldn't allow any adversarial forks (running multiple runners as a leader during time of any event). However, this guarantee brings a few limitations:
+ - During the epoch's rollover all but one runners will be stopped.
+ - Without known leader's events only one runner will be used (implies slow cold start).
+ - If an event approaches, all bootstrapping runners are stopped.
