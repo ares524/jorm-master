@@ -271,9 +271,11 @@ class Master:
         return [e for e in self.__leader_events if e > time()]
 
     def __closest_event(self):
-        """Return time remaining before next event
+        """Return time of the closest upcoming event, including epoch rollover
         """
         upcoming_events = self.__upcoming_events()
+        if self.__epoch_end_time is not None:
+            upcoming_events += [self.__epoch_end_time]
         return min(upcoming_events) if upcoming_events else None
 
     def __log_events(self):
@@ -361,6 +363,7 @@ class Master:
 
         # Kill all runners except one leader before epoch rollover
         if self.__epoch_end_time and self.__epoch_end_time - time() < config['epoch_kill']:
+            logger.info(f'Preparing for an epoch rollover, leaving one runner')
             self.one_runner()
 
         # Hibernate if the event is really close
