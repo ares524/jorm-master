@@ -52,15 +52,16 @@ class Runner:
     def __init__(self, id):
         self.booting = False
         self.boot_start_time = time()  # don't kill booting runners after jorm_manager restart
-        self.boot_end_time = 0
         self.id = id
         self.__session = requests.Session()
         self.__rest = f'http://127.0.0.1:{config["rest_prefix"]}{id}'
         # caching of status and height results
         self.__status = None
         self.__height = None
-        self.__status_time = 0
-        self.__height_time = 0
+        self.__uptime = None
+        self.__status_updated_time = 0
+        self.__height_updated_time = 0
+        self.__uptime_updated_time = 0
 
     def __node_stats(self):
         """Return node stats in JSON format for a specific instance. Passes exceptions
@@ -83,16 +84,16 @@ class Runner:
         """
         try:
             # Update cache if necessary
-            if self.__status is None or time() - self.__status_time > 2:
+            if self.__status is None or time() - self.__status_updated_time > 2:
                 self.__status = Status.ON if self.__node_stats()['state'] == 'Running' else Status.BOOT
-                self.__status_time = time()
+                self.__status_updated_time = time()
         except:
             # Make sure the service is really stopped (REST API issues)
             if run(['systemctl', 'is-active', '--quiet', f'jorm_runner@{self.id}']).returncode == 0:
                 logger.error(f'Jormungandr runner {self.id} not responding to REST api requests, stopping')
                 self.stop()
             self.__status = Status.OFF
-            self.__status_time = time()
+            self.__status_updated_time = time()
 
         return self.__status
 
@@ -101,14 +102,28 @@ class Runner:
         """
         try:
             # Update cache if necessary
-            if self.__height is None or time() - self.__height_time > 2:
+            if self.__height is None or time() - self.__height_updated_time > 2:
                 self.__height = int(self.__node_stats()['lastBlockHeight'])
-                self.__height_time = time()
+                self.__height_updated_time = time()
         except:
             self.__height = 0
-            self.__height_time = time()
+            self.__height_updated_time = time()
 
         return self.__height
+
+    def uptime(self):
+        """Return current node uptime, or 0 if unavailable
+        """
+        try:
+            # Update cache if necessary
+            if self.__uptime is None or time() - self.__uptime_updated_time > 2:
+                self.__uptime = int(self.__node_stats()['uptime'])
+                self.__uptime_updated_time = time()
+        except:
+            self.__uptime = 0
+            self.__uptime_updated_time = time()
+
+        return self.__uptime
 
     def restart(self):
         """(Re)start Jormungandr runner
@@ -117,7 +132,7 @@ class Runner:
         run(['systemctl', 'restart', f'jorm_runner@{self.id}.service'])
         self.boot_start_time = time()
         self.booting = True
-        self.__status_time = 0  # expire cache
+        self.__status_updated_time = 0  # expire cache
 
     def stop(self):
         """Stop Jormungandr runner
@@ -125,7 +140,7 @@ class Runner:
         logger.info(f'Stopping Jormungandr runner {self.id}')
         run(['systemctl', 'stop', f'jorm_runner@{self.id}.service'])
         self.booting = False
-        self.__status_time = 0  # expire cache
+        self.__status_updated_time = 0  # expire cache
 
     def block_0_time(self):
         """Return block 0 time from settings, or None if unavailable
@@ -384,13 +399,13 @@ class Master:
         if not self.__runners[best_id].is_leader():
             self.__runners[best_id].promote()
 
-    def set_boot_times(self):
-        """Set boot_end_time for nodes that just turned their state to ON
+    def set_boot_start_time(self):
+        """Set boot_start_time for nodes that just turned their state to ON
         """
         for r in self.__runners:
             if r.status() == Status.ON and r.booting:
+                logger.info(f'Runner {r.id} finished bootstrapping')
                 r.booting = False
-                r.boot_end_time = time()
             # Handle manual runner restarts by user
             if r.status() == Status.BOOT and not r.booting:
                 logger.info(f'Detected manual restart of runner {r.id}')
@@ -414,12 +429,13 @@ class Master:
         for r in self.__runners:
             # if the height difference from known maximum exceeded threshold
             is_stuck = r.status() == Status.ON and known_max - r.height() > config['max_offset']
-            if is_stuck and self.__safe_to_start() and time() - r.boot_end_time > config['boot_catch_up']:
-                logger.info(f'Jormungandr runner {r.id} is stuck, local: {r.height()}, known max: {known_max}')
+            if is_stuck and self.__safe_to_start() and r.uptime() > config['boot_catch_up']:
+                logger.warning(f'Jormungandr runner {r.id} is stuck, local: {r.height()}, known max: {known_max}')
                 r.restart()
 
             # if the bootstrap process is taking too long
             if r.status() == Status.BOOT and time() - r.boot_start_time > config['max_boot']:
+                logger.warning(f'Jormungandr runner {r.id} is bootstrapping for too long')
                 r.restart()
 
     def reset_on_epoch_end(self):
@@ -467,8 +483,8 @@ def main():
         # Make sure there is exactly one best behaving leader if possible
         master.best_leader()
 
-        # Set boot_end_time to nodes that just turned the state to ON
-        master.set_boot_times()
+        # Set boot_start_time to nodes that just turned the state to ON
+        master.set_boot_start_time()
 
         # Restart stuck runners
         pt_max = pooltool.majority_max()
