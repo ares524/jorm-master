@@ -382,7 +382,7 @@ class Master:
             self.one_runner()
 
         # Hibernate if the event is really close
-        if time_remaining < config['event_hibernate']:
+        if self.cnt_events() > 0 and time_remaining < config['event_hibernate']:
             logger.info(f'Preparing for a close event in {time_remaining:.2f} seconds, hibernating')
             sleep(time_remaining + 2)
             logger.info(f'Woke up')
