@@ -53,7 +53,7 @@ class Runner:
         self.booting = False
         self.boot_start_time = time()  # don't kill booting runners after jorm_manager restart
         self.boot_end_time = 0
-        self.__id = id
+        self.id = id
         self.__session = requests.Session()
         self.__rest = f'http://127.0.0.1:{config["rest_prefix"]}{id}'
         # caching of status and height results
@@ -88,8 +88,8 @@ class Runner:
                 self.__status_time = time()
         except:
             # Make sure the service is really stopped (REST API issues)
-            if run(['systemctl', 'is-active', '--quiet', f'jorm_runner@{self.__id}']).returncode == 0:
-                logger.error(f'Jormungandr runner {self.__id} not responding to REST api requests, stopping')
+            if run(['systemctl', 'is-active', '--quiet', f'jorm_runner@{self.id}']).returncode == 0:
+                logger.error(f'Jormungandr runner {self.id} not responding to REST api requests, stopping')
                 self.stop()
             self.__status = Status.OFF
             self.__status_time = time()
@@ -113,8 +113,8 @@ class Runner:
     def restart(self):
         """(Re)start Jormungandr runner
         """
-        logger.info(f'(Re)starting Jormungandr runner {self.__id}')
-        run(['systemctl', 'restart', f'jorm_runner@{self.__id}.service'])
+        logger.info(f'(Re)starting Jormungandr runner {self.id}')
+        run(['systemctl', 'restart', f'jorm_runner@{self.id}.service'])
         self.boot_start_time = time()
         self.booting = True
         self.__status_time = 0  # expire cache
@@ -122,8 +122,8 @@ class Runner:
     def stop(self):
         """Stop Jormungandr runner
         """
-        logger.info(f'Stopping Jormungandr runner {self.__id}')
-        run(['systemctl', 'stop', f'jorm_runner@{self.__id}.service'])
+        logger.info(f'Stopping Jormungandr runner {self.id}')
+        run(['systemctl', 'stop', f'jorm_runner@{self.id}.service'])
         self.booting = False
         self.__status_time = 0  # expire cache
 
@@ -171,22 +171,22 @@ class Runner:
         """Make passive node a leader
         """
         try:
-            logger.info(f'Promoting Jormungandr runner {self.__id} to leader')
+            logger.info(f'Promoting Jormungandr runner {self.id} to leader')
             with open(config['node_secret'], 'r') as f:
                 secret = yaml.safe_load(f)
                 self.__session.post(f'{self.__rest}/api/v0/leaders', json=secret).raise_for_status()
         except:
-            logger.error(f'Cannot promote Jormungandr runner {self.__id} to leader')
+            logger.error(f'Cannot promote Jormungandr runner {self.id} to leader')
 
     def demote(self):
         """Make the runner a passive node without the possibility to create blocks
         """
         try:
             for leader_id in self.leader_ids():
-                logger.info(f'Removing leader id {leader_id} from Jormungandr runner {self.__id}')
+                logger.info(f'Removing leader id {leader_id} from Jormungandr runner {self.id}')
                 self.__session.delete(f'{self.__rest}/api/v0/leaders/{leader_id}').raise_for_status()
         except:
-            logger.error(f'Cannot demote Jormungandr runner {self.__id}')
+            logger.error(f'Cannot demote Jormungandr runner {self.id}')
 
 
 class PoolTool:
@@ -280,8 +280,8 @@ class Master:
         """Write to logs schedule of upcoming events
         """
         events = sorted(self.__upcoming_events())
-        for ix, e in enumerate(events):
-            logger.info(f'Upcoming event: {ix} at {datetime.fromtimestamp(e)}')
+        for i, e in enumerate(events):
+            logger.info(f'Upcoming event: {i} at {datetime.fromtimestamp(e)}')
 
     def cnt_events(self, only_future=True):
         """Return number of events scheduled
@@ -326,13 +326,13 @@ class Master:
     def one_runner(self):
         """Leave only one best behaving runner
         """
-        leave_ix = self.__runners_sorted()[0]
+        leave_id = self.__runners_sorted()[0]
 
-        for ix, r in enumerate(self.__runners):
-            if ix != leave_ix and r.status() != Status.OFF:
+        for r in self.__runners:
+            if r.id != leave_id and r.status() != Status.OFF:
                 r.stop()
 
-        r = self.__runners[leave_ix]
+        r = self.__runners[leave_id]
         if r.status() == Status.ON and not r.is_leader():
             r.promote()
 
@@ -348,15 +348,15 @@ class Master:
             stats = self.stats()
 
             # Stop bootstrapping runners in advance before event
-            if time_remaining < config['event_boot_stop'] and Status.BOOT in self.stats():
+            if time_remaining < config['event_boot_stop'] and Status.BOOT in stats:
                 # Leave one if none other are on
-                leave_booting_ix = -1
+                leave_booting_id = -1
                 if Status.BOOT in stats and not Status.ON in stats:
-                    leave_booting_ix = stats.index(Status.BOOT)
+                    leave_booting_id = stats.index(Status.BOOT)
 
                 logger.info(f'Event ahead in {time_remaining:.2f} seconds, killing bootstrapping runners')
-                for ix, r in enumerate(self.__runners):
-                    if stats[ix] == Status.BOOT and ix != leave_booting_ix:
+                for r in self.__runners:
+                    if r.id != leave_booting_id and r.status() == Status.BOOT:
                         r.stop()
 
         # Kill all runners except one leader before epoch rollover
@@ -372,14 +372,14 @@ class Master:
     def best_leader(self):
         """Make sure there is exactly one best behaving leader if possible
         """
-        best_ix = self.__runners_sorted()[0]
+        best_id = self.__runners_sorted()[0]
 
-        for ix, r in enumerate(self.__runners):
-            if ix != best_ix and r.is_leader():
+        for r in self.__runners:
+            if r.id != best_id and r.is_leader():
                 r.demote()
 
-        if not self.__runners[best_ix].is_leader():
-            self.__runners[best_ix].promote()
+        if not self.__runners[best_id].is_leader():
+            self.__runners[best_id].promote()
 
     def set_boot_times(self):
         """Set boot_end_time for nodes that just turned their state to ON
@@ -390,6 +390,7 @@ class Master:
                 r.boot_end_time = time()
             # Handle manual runner restarts by user
             if r.status() == Status.BOOT and not r.booting:
+                logger.info(f'Detected manual restart of runner {r.id}')
                 r.booting = True
                 r.boot_start_time = time()
 
@@ -407,11 +408,11 @@ class Master:
         """
         known_max = max(self.heights() + [pt_max])
 
-        for ix, r in enumerate(self.__runners):
+        for r in self.__runners:
             # if the height difference from known maximum exceeded threshold
             is_stuck = r.status() == Status.ON and known_max - r.height() > config['max_offset']
             if is_stuck and self.__safe_to_start() and time() - r.boot_end_time > config['boot_catch_up']:
-                logger.info(f'Jormungandr runner {ix} is stuck, local: {r.height()}, known max: {known_max}')
+                logger.info(f'Jormungandr runner {r.id} is stuck, local: {r.height()}, known max: {known_max}')
                 r.restart()
 
             # if the bootstrap process is taking too long
