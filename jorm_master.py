@@ -25,7 +25,6 @@ p = config['pooltool']
 pooltool_endp = f'{p["endp_tip"]}?poolid={p["pool_id"]}&userid={p["user_id"]}&genesispref={p["genesis"][:14]}&mytip='
 del(p)
 
-
 # Initialize systemd logging
 logger = logging.getLogger('jorm_master')
 journald_handler = JournaldLogHandler()
@@ -42,8 +41,10 @@ def unix_time(time_str):
 
 
 class Status(IntEnum):
+    """Current status of a runner
+    """
     OFF = 1
-    BOOT = 2
+    BOOT = 2  # Bootstrapping
     ON = 3
 
 
@@ -55,6 +56,11 @@ class Runner:
         self.__id = id
         self.__session = requests.Session()
         self.__rest = f'http://127.0.0.1:{config["rest_prefix"]}{id}'
+        # caching of status and height results
+        self.__status = None
+        self.__height = None
+        self.__status_time = 0
+        self.__height_time = 0
 
     def __node_stats(self):
         """Return node stats in JSON format for a specific instance. Passes exceptions
@@ -76,13 +82,33 @@ class Runner:
         """Return runner's status - ON/BOOT/OFF
         """
         try:
-            return Status.ON if self.__node_stats()['state'] == 'Running' else Status.BOOT
+            # Update cache if necessary
+            if self.__status is None or time() - self.__status_time > 2:
+                self.__status = Status.ON if self.__node_stats()['state'] == 'Running' else Status.BOOT
+                self.__status_time = time()
         except:
             # Make sure the service is really stopped (REST API issues)
             if run(['systemctl', 'is-active', '--quiet', f'jorm_runner@{self.__id}']).returncode == 0:
                 logger.error(f'Jormungandr runner {self.__id} not responding to REST api requests, stopping')
                 self.stop()
-            return Status.OFF
+            self.__status = Status.OFF
+            self.__status_time = time()
+
+        return self.__status
+
+    def height(self):
+        """Return current block height, or 0 if unavailable
+        """
+        try:
+            # Update cache if necessary
+            if self.__height is None or time() - self.__height_time > 2:
+                self.__height = int(self.__node_stats()['lastBlockHeight'])
+                self.__height_time = time()
+        except:
+            self.__height = 0
+            self.__height_time = time()
+
+        return self.__height
 
     def restart(self):
         """(Re)start Jormungandr runner
@@ -91,6 +117,7 @@ class Runner:
         run(['systemctl', 'restart', f'jorm_runner@{self.__id}.service'])
         self.boot_start_time = time()
         self.booting = True
+        self.__status_time = 0  # expire cache
 
     def stop(self):
         """Stop Jormungandr runner
@@ -98,14 +125,7 @@ class Runner:
         logger.info(f'Stopping Jormungandr runner {self.__id}')
         run(['systemctl', 'stop', f'jorm_runner@{self.__id}.service'])
         self.booting = False
-
-    def height(self):
-        """Return current block height, or 0 if unavailable
-        """
-        try:
-            return int(self.__node_stats()['lastBlockHeight'])
-        except:
-            return 0
+        self.__status_time = 0  # expire cache
 
     def block_0_time(self):
         """Return block 0 time from settings, or None if unavailable
@@ -141,22 +161,11 @@ class Runner:
     def leader_events(self):
         """Return list of all leader event times for the current epoch
         """
-        res = []
-        curr_time = time()
-
         try:
             events = self.__session.get(f'{self.__rest}/api/v0/leaders/logs').json()
-            for e in events:
-                t = e['scheduled_at_time']
-                event_time = unix_time(t)
-                if event_time > curr_time:
-                    logger.info(f'Found leader event at {t}')
-                    res += [event_time]
-            logger.info(f'There are {len(res)} leader events remaining in the current epoch')
+            return [unix_time(e['scheduled_at_time']) for e in events]
         except:
-            pass
-
-        return res
+            return []
 
     def promote(self):
         """Make passive node a leader
@@ -217,183 +226,258 @@ class PoolTool:
         return self.__majority_max
 
 
-def one_best_leader(runners):
-    """Make sure there is exactly one best behaving leader if possible
-    """
-    heights = [r.height() for r in runners]
-    leaders = [r.is_leader() for r in runners]
-    max_height = max(heights)
+class Master:
+    def __init__(self, cnt_runners):
+        self.__runners = [Runner(i) for i in range(cnt_runners)]
+        self.__block_0_time = None
+        self.__slot_duration = None
+        self.__slots_per_epoch = None
+        self.__epoch = None
+        self.__epoch_end_time = None
+        self.__leader_events = []
 
-    # demote poorly behaving leaders
-    for ix, r in enumerate(runners):
-        if leaders[ix] and heights[ix] < max_height - 1:
-            r.demote()
-            leaders[ix] = False
+    def settings_loaded(self):
+        """From epoch_end_time determine if the settings for current epoch are loaded
+        """
+        return self.__epoch_end_time is not None
 
-    cnt_leaders = len(leaders)
-    if cnt_leaders == 1:
-        return
+    def load_settings(self):
+        """Load general settings and compute epoch and epoch_end_time
+        """
+        runner_on = None
+        for r in self.__runners:
+            if r.status() == Status.ON:
+                runner_on = r
+                break
+        if runner_on == None:
+            return
 
-    chosen_one = heights.index(max(heights))
+        if self.__block_0_time is None:
+            self.__block_0_time = runner_on.block_0_time()
+        if self.__slot_duration is None:
+            self.__slot_duration = runner_on.slot_duration()
+        if self.__slots_per_epoch is None:
+            self.__slots_per_epoch = runner_on.slots_per_epoch()
+        if self.__epoch is None:
+            self.__epoch = int((time() - self.__block_0_time) / (self.__slot_duration * self.__slots_per_epoch))
+            logger.info(f'The current epoch is {self.__epoch}')
+        if self.__epoch_end_time is None:
+            self.__epoch_end_time = (self.__epoch + 1) * self.__slot_duration * self.__slots_per_epoch + self.__block_0_time - 1
+            logger.info(f'The current epoch ends at {self.__epoch_end_time}')
 
-    if cnt_leaders > 1:
-        logger.warning(f'Multiple leaders present ({cnt_leaders}), keeping only #{chosen_one}')
-        for ix, r in enumerate(runners):
-            if r.is_leader() and ix != chosen_one:
+    def __upcoming_events(self):
+        """Return list of upcoming events
+        """
+        return [e for e in self.__leader_events if e > time()]
+
+    def __closest_event(self):
+        """Return time remaining before next event
+        """
+        upcoming_events = self.__upcoming_events()
+        return min(upcoming_events) if upcoming_events else None
+
+    def __log_events(self):
+        """Write to logs schedule of upcoming events
+        """
+        events = sorted(self.__upcoming_events())
+        for ix, e in enumerate(events):
+            logger.info(f'Upcoming event: {ix} at {datetime.fromtimestamp(e)}')
+
+    def cnt_events(self, only_future=True):
+        """Return number of events scheduled
+        """
+        return len(self.__upcoming_events()) if only_future else len(self.__leader_events)
+
+    def load_events(self):
+        """Load leader events
+        """
+        for r in self.__runners:
+            if r.status() == Status.ON:
+                self.__leader_events = r.leader_events()
+                self.__log_events()
+                return
+
+    def stats(self):
+        """Return list with status of each runner
+        """
+        return [r.status() for r in self.__runners]
+
+    def heights(self):
+        """Return list with block heights of each runner
+        """
+        return [r.height() for r in self.__runners]
+
+    def start_runner(self, id):
+        """Start a Jormungandr runner
+        """
+        self.__runners[id].restart()
+
+    def __runners_sorted(self):
+        """Return list of runner indexes sorted by their preference (best at index 0)
+        """
+        # Sort indexes of all runners by their preference
+        return sorted(range(len(self.__runners)),
+                      key=lambda i: (self.__runners[i].status() == Status.ON,    # 1) is running
+                                     self.__runners[i].height(),                 # 2) height
+                                     self.__runners[i].is_leader(),              # 3) is leader
+                                     self.__runners[i].status() == Status.BOOT), # 4) is bootstrapping
+                      reverse=True)
+
+    def one_runner(self):
+        """Leave only one best behaving runner
+        """
+        leave_ix = self.__runners_sorted()[0]
+
+        for ix, r in enumerate(self.__runners):
+            if ix != leave_ix and r.status() != Status.OFF:
+                r.stop()
+
+        r = self.__runners[leave_ix]
+        if r.status() == Status.ON and not r.is_leader():
+            r.promote()
+
+    def handle_near_events(self):
+        """Prepare for the upcoming events:
+
+        - 1. phase: stop the bootstrapping runners (dont risk adversarial forks)
+        - 2. phase: hibernate until the event is over
+        - epoch rollover: kill all runners except one
+        """
+        if self.cnt_events() > 0:
+            time_remaining = self.__closest_event() - time()
+            stats = self.stats()
+
+            # Stop bootstrapping runners in advance before event
+            if time_remaining < config['event_boot_stop'] and Status.BOOT in self.stats():
+                # Leave one if none other are on
+                leave_booting_ix = -1
+                if Status.BOOT in stats and not Status.ON in stats:
+                    leave_booting_ix = stats.index(Status.BOOT)
+
+                logger.info(f'Event ahead in {time_remaining:.2f} seconds, killing bootstrapping runners')
+                for ix, r in enumerate(self.__runners):
+                    if stats[ix] == Status.BOOT and ix != leave_booting_ix:
+                        r.stop()
+
+        # Kill all runners except one leader before epoch rollover
+        if self.__epoch_end_time and self.__epoch_end_time - time() < config['epoch_kill']:
+            self.one_runner()
+
+        # Hibernate if the event is really close
+        if time_remaining < config['event_hibernate']:
+            logger.info(f'Preparing for a close event in {time_remaining:.2f} seconds, hibernating')
+            sleep(time_remaining + 2)
+            logger.info(f'Woke up')
+
+    def best_leader(self):
+        """Make sure there is exactly one best behaving leader if possible
+        """
+        best_ix = self.__runners_sorted()[0]
+
+        for ix, r in enumerate(self.__runners):
+            if ix != best_ix and r.is_leader():
                 r.demote()
-    elif runners[chosen_one].status() == Status.ON:
-        runners[chosen_one].promote()
 
+        if not self.__runners[best_ix].is_leader():
+            self.__runners[best_ix].promote()
 
-def handle_near_events(runners, stats, events, epoch_end_time):
-    """Prepare for the upcoming events:
-
-      - stop the bootstrapping runners (dont risk adversarial forks) 30 seconds ahead
-      - if the event is an epoch rollover, kill all runners except one
-      - sleep until it is over
-    """
-    if not events:
-        # Leave only one runner without known events
-        if len([s != Status.OFF for s in stats]) > 1:
-            leave_ix = stats.index(Status.ON) if Status.ON in stats else stats.index(Status.BOOT)
-            for ix, r in enumerate(runners):
-                if stats[ix] != Status.OFF and ix != leave_ix:
-                    r.stop()
-        return
-
-    curr_time = time()
-    closest_event = min([e for e in events if e > curr_time])
-    time_remaining = closest_event - time()
-
-    # Stop bootstrapping runners in advance before event
-    if time_remaining < config['event_boot_stop'] and Status.BOOT in stats:
-        # Leave one if none other are on
-        leave_booting_ix = -1
-        if not Status.ON in stats:
-            leave_booting_ix = stats.index(Status.BOOT) if Status.BOOT in stats else -1
-
-        logger.info(f'Event ahead in {time_remaining} seconds, killing bootstrapping runners')
-        for ix, r in enumerate(runners):
-            if stats[ix] == Status.BOOT and ix != leave_booting_ix:
-                r.stop()
-
-    # Kill all runners except one leader before epoch rollover
-    if epoch_end_time and epoch_end_time - curr_time < config['epoch_kill']:
-        leader_seen = False
-        for r in runners:
-            if not leader_seen and r.is_leader():
-                leader_seen = True
-            else:
-                r.stop()
-
-    # Hibernate if the event is really close
-    if time_remaining < config['event_hibernate']:
-        logger.info(f'Preparing for a close event in {time_remaining} seconds, hibernating')
-        sleep(time_remaining + 2)
-        logger.info(f'Woke up')
-
-
-def safe_to_start(events):
-    """Check if it is a safe time to start other runners
-    """
-    # Without knowing the events schedule it is never safe
-    if not events:
-        return False
-
-    curr_time = time()
-
-    for event_time in events:
-        if curr_time < event_time and event_time - curr_time < config['start_before_event']:
-            return False
-    return True
-
-
-def main():
-    runners = [Runner(i) for i in range(config['cnt_runners'])]
-    pooltool = PoolTool()
-
-    block_0_time = None
-    slot_duration = None
-    slots_per_epoch = None
-
-    epoch = None
-    epoch_end_time = None
-
-    leader_events = []
-    events = []
-
-    while True:
-        # Update auxiliary variables
-        heights = [r.height() for r in runners]
-        pt_major_max = pooltool.majority_max()
-        stats = [r.status() for r in runners]
-        # get index of any running (not bootstrapping) runner
-        runner_on = stats.index(Status.ON) if Status.ON in stats else None
-
-        # If all runners are off, start one
-        if all([s == Status.OFF for s in stats]):
-            logger.info(f'All Jormungandr runners are off, starting one')
-            runners[0].restart()
-            stats[0] = runners[0].status()
-
-        # Get settings values
-        if not epoch_end_time and runner_on is not None:
-            block_0_time = block_0_time or runners[runner_on].block_0_time()
-            slot_duration = slot_duration or runners[runner_on].slot_duration()
-            slots_per_epoch = slots_per_epoch or runners[runner_on].slots_per_epoch()
-            epoch = int((time() - block_0_time) / (slot_duration * slots_per_epoch))
-            logger.info(f'The current epoch is {epoch}')
-            epoch_end_time = (epoch + 1) * slot_duration * slots_per_epoch + block_0_time - 1
-            logger.info(f'The current epoch ends at {epoch_end_time}')
-
-        # Get schedule of leader events
-        if not leader_events and runner_on is not None:
-            leader_events = runners[runner_on].leader_events()
-
-        # Handle near events:
-        events = leader_events if leader_events else []
-        events += [epoch_end_time] if epoch_end_time else []
-        handle_near_events(runners, stats, events, epoch_end_time)
-
-        # Make sure there is exactly one best behaving leader if possible
-        one_best_leader(runners)
-
-        # Set boot_end_time to nodes that just turned the state to ON
-        for ix, r in enumerate(runners):
-            if stats[ix] == Status.ON and r.booting:
+    def set_boot_times(self):
+        """Set boot_end_time for nodes that just turned their state to ON
+        """
+        for r in self.__runners:
+            if r.status() == Status.ON and r.booting:
                 r.booting = False
                 r.boot_end_time = time()
+            # Handle manual runner restarts by user
+            if r.status() == Status.BOOT and not r.booting:
+                r.booting = True
+                r.boot_start_time = time()
 
-        # Restart stuck runners
-        for ix, r in enumerate(runners):
+    def __safe_to_start(self):
+        """Is it a safe time to start a new runner?
+        """
+        # Without knowing the events schedule it is never safe
+        if self.cnt_events(only_future=False) == 0 or self.__epoch_end_time is None:
+            return False
+
+        return self.__closest_event() - time() > config['start_before_event']
+
+    def restart_stuck(self, pt_max):
+        """Restart stuck runners
+        """
+        known_max = max(self.heights() + [pt_max])
+
+        for ix, r in enumerate(self.__runners):
             # if the height difference from known maximum exceeded threshold
-            known_max = max(heights + [pt_major_max])
-            if stats[ix] == Status.ON and heights[ix] + config['max_offset'] < known_max and safe_to_start(events) and time() - r.boot_end_time > config['boot_catch_up']:
-                logger.info(f'Jormungandr runner {ix} is stuck, local: {heights[ix]}, known max: {known_max}')
+            is_stuck = r.status() == Status.ON and known_max - r.height() > config['max_offset']
+            if is_stuck and self.__safe_to_start() and time() - r.boot_end_time > config['boot_catch_up']:
+                logger.info(f'Jormungandr runner {ix} is stuck, local: {r.height()}, known max: {known_max}')
                 r.restart()
 
             # if the bootstrap process is taking too long
-            if stats[ix] == Status.BOOT and time() - r.boot_start_time > config['max_boot']:
-                r.restart(force=True)
+            if r.status() == Status.BOOT and time() - r.boot_start_time > config['max_boot']:
+                r.restart()
 
-        # Reset variables after epoch rollover
-        if epoch_end_time and time() > epoch_end_time:
-            epoch = None
-            epoch_end_time = None
-            leader_events = None
+    def reset_on_epoch_end(self):
+        """Clear no longer valid variables after epoch rollover
+        """
+        if self.__epoch_end_time and time() > self.__epoch_end_time:
+            self.__epoch = None
+            self.__epoch_end_time = None
+            self.__leader_events = None
 
-        # Start the rest of the runners if we know for sure there is enough time.
-        # Only possible with known leader events (and at least one assigned block).
-        if Status.OFF in stats and leader_events and safe_to_start(events):
-            for ix, r in enumerate(runners):
-                if stats[ix] == Status.OFF:
+    def start_if_possible(self):
+        """ Start the rest of the runners if we know for sure there is enough time.
+        """
+        if self.__safe_to_start():
+            for r in self.__runners:
+                if r.status() == Status.OFF:
                     r.restart()
 
-        # Report max height to PoolTool
-        pooltool.send_height(max(heights))
 
-        # Remove passed events
-        leader_events = [e for e in leader_events if e > time()]
+def main():
+    master = Master(cnt_runners=config['cnt_runners'])
+    pooltool = PoolTool()
+
+    while True:
+        # Start first runner if all of them are stopped
+        if all([s == Status.OFF for s in master.stats()]):
+            logger.info(f'All Jormungandr runners are off, starting one')
+            master.start_runner(id=0)
+
+        # Load genesis settings
+        if not master.settings_loaded():
+            master.load_settings()
+
+        # Get leader events
+        if master.cnt_events(only_future=False) == 0:
+            master.load_events()
+
+        # Without known events leave only one runner
+        if master.cnt_events(only_future=False) == 0:
+            master.one_runner()
+
+        # Handle near events:
+        master.handle_near_events()
+
+        # Make sure there is exactly one best behaving leader if possible
+        master.best_leader()
+
+        # Set boot_end_time to nodes that just turned the state to ON
+        master.set_boot_times()
+
+        # Restart stuck runners
+        pt_max = pooltool.majority_max()
+        master.restart_stuck(pt_max)
+
+        # Reset variables after epoch rollover
+        master.reset_on_epoch_end()
+
+        # Start the rest of the runners if we know for sure there is enough time.
+        master.start_if_possible()
+
+        # Report max height to PoolTool
+        pooltool.send_height(max(master.heights()))
 
         # Wait before next cycle
         sleep(3)
