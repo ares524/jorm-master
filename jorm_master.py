@@ -278,7 +278,7 @@ class Master:
             logger.info(f'The current epoch is {self.__epoch}')
         if self.__epoch_end_time is None:
             self.__epoch_end_time = (self.__epoch + 1) * self.__slot_duration * self.__slots_per_epoch + self.__block_0_time - 1
-            logger.info(f'The current epoch ends at {self.__epoch_end_time}')
+            logger.info(f'The current epoch ends at {datetime.fromtimestamp(self.__epoch_end_time)}')
 
     def __upcoming_events(self):
         """Return list of upcoming events
