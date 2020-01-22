@@ -90,7 +90,7 @@ class Runner:
         except:
             # Make sure the service is really stopped (REST API issues)
             if run(['systemctl', 'is-active', '--quiet', f'jorm_runner@{self.id}']).returncode == 0:
-                logger.error(f'Jormungandr runner {self.id} not responding to REST api requests, stopping')
+                logger.error(f'Jormungandr runner {self.id} is not responding to REST api requests, stopping')
                 self.stop()
             self.__status = Status.OFF
             self.__status_updated_time = time()
@@ -280,38 +280,39 @@ class Master:
             self.__epoch_end_time = (self.__epoch + 1) * self.__slot_duration * self.__slots_per_epoch + self.__block_0_time - 1
             logger.info(f'The current epoch ends at {datetime.fromtimestamp(self.__epoch_end_time)}')
 
-    def __upcoming_events(self):
+    def __upcoming_events(self, epoch_roll=False):
         """Return list of upcoming events
         """
-        return [e for e in self.__leader_events if e > time()]
+        res = [e for e in self.__leader_events if e > time()]
+        if epoch_roll and self.__epoch_end_time is not None:
+            res += [self.__epoch_end_time]
+        return res
 
-    def __closest_event(self):
-        """Return time of the closest upcoming event, including epoch rollover
+    def __closest_event(self, epoch_roll=False):
+        """Return time of the closest upcoming event
         """
-        upcoming_events = self.__upcoming_events()
-        if self.__epoch_end_time is not None:
-            upcoming_events += [self.__epoch_end_time]
+        upcoming_events = self.__upcoming_events(epoch_roll)
         return min(upcoming_events) if upcoming_events else None
 
-    def __log_events(self):
-        """Write to logs schedule of upcoming events
+    def __log_leader_events(self):
+        """Write to logs schedule of upcoming leader events
         """
-        events = sorted(self.__upcoming_events())
+        events = sorted(self.__upcoming_events(epoch_roll=False))
         for i, e in enumerate(events):
             logger.info(f'Upcoming event: {i} at {datetime.fromtimestamp(e)}')
 
-    def cnt_events(self, only_future=True):
+    def cnt_events(self, only_future=True, epoch_roll=False):
         """Return number of events scheduled
         """
-        return len(self.__upcoming_events()) if only_future else len(self.__leader_events)
+        return len(self.__upcoming_events(epoch_roll)) if only_future else len(self.__leader_events)
 
-    def load_events(self):
+    def load_leader_events(self):
         """Load leader events
         """
         for r in self.__runners:
             if r.status() == Status.ON:
                 self.__leader_events = r.leader_events()
-                self.__log_events()
+                self.__log_leader_events()
                 return
 
     def stats(self):
@@ -357,11 +358,11 @@ class Master:
         """Prepare for the upcoming events:
 
         - 1. phase: stop the bootstrapping runners (dont risk adversarial forks)
-        - 2. phase: hibernate until the event is over
-        - epoch rollover: kill all runners except one
+        - 2. phase: on epoch rollover kill all runners except one
+        - 3. phase: hibernate until the event is over
         """
-        if self.cnt_events() > 0:
-            time_remaining = self.__closest_event() - time()
+        if self.cnt_events(only_future=True, epoch_roll=True) > 0:
+            time_remaining = self.__closest_event(epoch_roll=True) - time()
             stats = self.stats()
 
             # Stop bootstrapping runners in advance before event
@@ -376,16 +377,17 @@ class Master:
                     if r.id != leave_booting_id and r.status() == Status.BOOT:
                         r.stop()
 
-        # Kill all runners except one leader before epoch rollover
-        if self.__epoch_end_time and self.__epoch_end_time - time() < config['epoch_kill']:
-            logger.info(f'Preparing for an epoch rollover, leaving one runner')
-            self.one_runner()
+            # Kill all runners except one leader before epoch rollover
+            epoch_rollover = self.__epoch_end_time is not None and self.__epoch_end_time - time() < config['epoch_kill']
+            if epoch_rollover and sum([s == Status.OFF for s in self.stats()]) != len(self.__runners):
+                logger.info(f'Preparing for an epoch rollover, leaving one runner')
+                self.one_runner()
 
-        # Hibernate if the event is really close
-        if self.cnt_events() > 0 and time_remaining < config['event_hibernate']:
-            logger.info(f'Preparing for a close event in {time_remaining:.2f} seconds, hibernating')
-            sleep(time_remaining + 2)
-            logger.info(f'Woke up')
+            # Hibernate if the event is really close
+            if time_remaining < config['event_hibernate']:
+                logger.info(f'Preparing for a close event in {time_remaining:.2f} seconds, hibernating')
+                sleep(time_remaining + 2)
+                logger.info(f'Woke up')
 
     def best_leader(self):
         """Make sure there is exactly one best behaving leader if possible
@@ -471,7 +473,7 @@ def main():
 
         # Get leader events
         if master.cnt_events(only_future=False) == 0:
-            master.load_events()
+            master.load_leader_events()
 
         # Without known events leave only one runner
         if master.cnt_events(only_future=False) == 0:

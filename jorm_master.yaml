@@ -12,13 +12,13 @@ max_boot: 900
 # How long before an event takes place stop the bootstrapping runners
 event_boot_stop: 30
 # How long before epoch rollover happens kill all runners except one
-epoch_kill: 30
+epoch_kill: 15
 # How long before the event happens start hibernating
 event_hibernate: 10
 # How long before an event happens it makes sense to start a new runner
 start_before_event: 300
 # How long to allow runner to be behind after bootstrap to catch up
-boot_catch_up: 120
+boot_catch_up: 300
 
 # Settings related to PoolTool.io website
 pooltool:
@@ -29,7 +29,7 @@ pooltool:
     # Current genesis block hash
     genesis: "8e4d2a343f3dcf9330ad9035b3e8d168e6728904262f2c434a4f8f934ec7b676"
     # Minimal time before sending new block height tip
-    send_wait: 45
+    send_wait: 60
     # Minimal time before requesting updated majority max
     recv_wait: 30
     # Share tip API endpoint
