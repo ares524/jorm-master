@@ -386,7 +386,7 @@ class Master:
 
             # Kill all runners except one leader before epoch rollover
             epoch_rollover = self.__epoch_end_time is not None and self.__epoch_end_time - time() < config['epoch_kill']
-            if epoch_rollover and sum([s == Status.OFF for s in self.stats()]) != len(self.__runners):
+            if epoch_rollover and sum([s == Status.OFF for s in self.stats()]) != len(self.__runners) - 1:
                 logger.info(f'Preparing for an epoch rollover, leaving one runner')
                 self.one_runner()
 
@@ -425,7 +425,7 @@ class Master:
         """Is it a safe time to start a new runner?
         """
         # Without knowing the events schedule it is never safe
-        if self.__leader_events is None or self.__epoch_end_time is None:
+        if not self.__leader_events or self.__epoch_end_time is None:
             return False
 
         return self.__closest_event(epoch_roll=True) - time() > config['start_before_event']
@@ -453,7 +453,7 @@ class Master:
         if self.__epoch_end_time and time() > self.__epoch_end_time:
             self.__epoch = None
             self.__epoch_end_time = None
-            self.__leader_events = None
+            self.__leader_events = []
 
     def start_if_possible(self):
         """ Start the rest of the runners if we know for sure there is enough time.
