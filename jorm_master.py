@@ -82,17 +82,24 @@ class Runner:
     def status(self):
         """Return runner's status - ON/BOOT/OFF
         """
-        try:
-            # Update cache if necessary
-            if self.__status is None or time() - self.__status_updated_time > 2:
-                self.__status = Status.ON if self.__node_stats()['state'] == 'Running' else Status.BOOT
-                self.__status_updated_time = time()
-        except:
-            # Make sure the service is really stopped (REST API issues)
+        if self.__status is None or time() - self.__status_updated_time > 2:
+            # Update cached value
             if run(['systemctl', 'is-active', '--quiet', f'jorm_runner@{self.id}']).returncode == 0:
-                logger.error(f'Jormungandr runner {self.id} is not responding to REST api requests, stopping')
-                self.stop()
-            self.__status = Status.OFF
+                failures = 0
+                while True:
+                    try:
+                        self.__status = Status.ON if self.__node_stats()['state'] == 'Running' else Status.BOOT
+                        break
+                    except:
+                        failures += 1
+                        if failures >= 2:
+                            logger.error(f'Jormungandr runner {self.id} is not responding to REST api requests, stopping')
+                            self.stop()
+                            self.__status = Status.OFF
+                            break
+            else:
+                self.__status = Status.OFF
+
             self.__status_updated_time = time()
 
         return self.__status
@@ -289,7 +296,7 @@ class Master:
         return res
 
     def __closest_event(self, epoch_roll=False):
-        """Return time of the closest upcoming event
+        """Return time of the closest upcoming event, or None if unavailable
         """
         upcoming_events = self.__upcoming_events(epoch_roll)
         return min(upcoming_events) if upcoming_events else None
@@ -418,10 +425,10 @@ class Master:
         """Is it a safe time to start a new runner?
         """
         # Without knowing the events schedule it is never safe
-        if self.cnt_events(only_future=False) == 0 or self.__epoch_end_time is None:
+        if self.__leader_events is None or self.__epoch_end_time is None:
             return False
 
-        return self.__closest_event() - time() > config['start_before_event']
+        return self.__closest_event(epoch_roll=True) - time() > config['start_before_event']
 
     def restart_stuck(self, pt_max):
         """Restart stuck runners
