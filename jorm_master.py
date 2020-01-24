@@ -100,7 +100,13 @@ class Runner:
                 failures = 0
                 while True:
                     try:
-                        self.__status = Status.ON if self.__node_stats()['state'] == 'Running' else Status.BOOT
+                        status = self.__node_stats()['state']
+                        if status == 'Running':
+                            self.__status = Status.ON
+                        elif status == 'Bootstrapping':
+                            self.__status = Status.BOOT
+                        else:
+                            raise ValueError("Cannot decide runner's status")
                         break
                     except Exception:
                         failures += 1
@@ -450,7 +456,7 @@ class Master:
                 r.restart()
 
             # if the bootstrap process is taking too long
-            if r.status() == Status.BOOT and time() - r.service_uptime() > config['max_boot']:
+            if r.status() == Status.BOOT and r.service_uptime() > config['max_boot']:
                 logger.warning(f'Jormungandr runner {r.id} is bootstrapping for too long')
                 r.restart()
 
