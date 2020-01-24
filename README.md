@@ -12,15 +12,20 @@ Jormungander master for running multiple node instances with no adversarial fork
    - [jorm_runner.sh](jorm_runner.sh) -> `/usr/local/bin/`
    - [jorm_runner@.service](jorm_runner@.service) -> `/etc/systemd/system/`
    - `jorm_runner_N.yaml` -> `/etc/cardano/` for each runner (0 to cnt - 1)
-3. Reload SystemD daemon
+3. Create a symbolic link to the Jormungandr executable for each runner
+   - E.g. with executables in `/usr/local/bin/` suffixed by a commit hash
+     ```
+     # ln -s /usr/local/bin/jormungandr_546497fc /usr/local/bin/jormungandr_runner_0
+     ```
+4. Reload SystemD daemon
    ```
    # systemctl daemon-reload
    ```
-4. Start the jorm_master
+5. Start the jorm_master
    ```
    # systemctl enable --now jorm_master.service
    ```
-5. Monitor the logs
+6. Monitor the logs
    ```
    $ journalctl -u jorm_master.service -f
    ```
