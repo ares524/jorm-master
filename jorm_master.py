@@ -454,6 +454,7 @@ class Master:
             if is_stuck and self.__safe_to_start() and r.uptime() > config['boot_catch_up']:
                 logger.warning(f'Jormungandr runner {r.id} is stuck, local: {r.height()}, known max: {known_max}')
                 r.restart()
+                sleep(0.5)
 
             # if the bootstrap process is taking too long
             if r.status() == Status.BOOT and r.service_uptime() > config['max_boot']:
