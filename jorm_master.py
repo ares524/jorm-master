@@ -103,7 +103,7 @@ class Runner:
                         status = self.__node_stats()['state']
                         if status == 'Running':
                             self.__status = Status.ON
-                        elif status == 'Bootstrapping':
+                        elif status in ['Bootstrapping', 'PreparingBlock0']:
                             self.__status = Status.BOOT
                         else:
                             raise ValueError("Cannot decide runner's status")
@@ -164,7 +164,7 @@ class Runner:
     def restart(self):
         """(Re)start Jormungandr runner
         """
-        logger.info(f'(Re)starting Jormungandr runner {self.id}')
+        logger.warning(f'(Re)starting Jormungandr runner {self.id}')
         run(['systemctl', 'restart', f'jorm_runner@{self.id}.service'])
         self.__status_updated_time = 0  # expire cache
 
@@ -311,7 +311,7 @@ class Master:
             logger.info(f'The current epoch is {self.__epoch}')
         if self.__epoch_end_time is None:
             self.__epoch_end_time = (self.__epoch + 1) * self.__slot_duration * self.__slots_per_epoch + self.__block_0_time - 1
-            logger.info(f'The current epoch ends at {datetime.fromtimestamp(self.__epoch_end_time)}')
+            logger.info(f'The current epoch {self.__epoch} ends at {datetime.fromtimestamp(self.__epoch_end_time)}')
 
     def __upcoming_events(self, epoch_roll=False):
         """Return list of upcoming events
