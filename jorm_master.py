@@ -345,7 +345,8 @@ class Master:
         for r in self.__runners:
             if r.status() == Status.ON:
                 self.__leader_events = r.leader_events()
-                self.__log_leader_events()
+                if len(self.__leader_events) > 0:
+                    self.__log_leader_events()
                 return
 
     def stats(self):
@@ -451,13 +452,13 @@ class Master:
         for r in self.__runners:
             # if the height difference from known maximum exceeded threshold
             is_stuck = r.status() == Status.ON and known_max - r.height() > config['max_offset']
-            if is_stuck and self.__safe_to_start() and r.uptime() > config['boot_catch_up']:
+            if is_stuck and r.uptime() > config['boot_catch_up'] and self.__safe_to_start():
                 logger.warning(f'Jormungandr runner {r.id} is stuck, local: {r.height()}, known max: {known_max}')
                 r.restart()
                 sleep(0.5)
 
             # if the bootstrap process is taking too long
-            if r.status() == Status.BOOT and r.service_uptime() > config['max_boot']:
+            if r.status() == Status.BOOT and r.service_uptime() > config['max_boot'] and self.__safe_to_start():
                 logger.warning(f'Jormungandr runner {r.id} is bootstrapping for too long')
                 r.restart()
 
@@ -493,11 +494,11 @@ def main():
             master.load_settings()
 
         # Get leader events
-        if master.cnt_events(only_future=False, epoch_roll=False) == 0:
+        if master.cnt_events(only_future=True, epoch_roll=False) == 0:
             master.load_leader_events()
 
         # Without known events leave only one runner
-        if master.cnt_events(only_future=False, epoch_roll=False) == 0:
+        if master.cnt_events(only_future=True, epoch_roll=False) == 0:
             master.one_runner()
 
         # Handle near events:
