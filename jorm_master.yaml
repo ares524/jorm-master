@@ -12,9 +12,9 @@ max_boot: 900
 # How long before an event happens to start doing something
 event_action: 15
 # How long before an event happens it makes sense to start a new runner
-start_before_event: 300
+start_before_event: 600
 # How long to allow runner to be behind after bootstrap to catch up
-boot_catch_up: 300
+boot_catch_up: 1500
 
 # Settings related to PoolTool.io website
 pooltool:

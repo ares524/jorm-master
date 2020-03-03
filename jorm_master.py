@@ -444,7 +444,7 @@ class Master:
             if epoch_rollover:
                 logger.info(f'Preparing for an epoch rollover, promoting all runners')
                 for r in self.__runners:
-                    if r.status == Status.ON and not r.is_leader():
+                    if r.status() == Status.ON and not r.is_leader():
                         r.promote()
 
             # Update remaining time
