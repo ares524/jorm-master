@@ -9,12 +9,8 @@ rest_prefix: 310
 max_offset: 5
 # How long will we wait for Jormungandr to finish bootstrapping before restarting
 max_boot: 900
-# How long before an event takes place stop the bootstrapping runners
-event_boot_stop: 30
-# How long before epoch rollover happens kill all runners except one
-epoch_kill: 15
-# How long before the event happens start hibernating
-event_hibernate: 10
+# How long before an event happens to start doing something
+event_action: 15
 # How long before an event happens it makes sense to start a new runner
 start_before_event: 300
 # How long to allow runner to be behind after bootstrap to catch up
