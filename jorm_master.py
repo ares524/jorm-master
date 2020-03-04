@@ -371,6 +371,8 @@ class Master:
         for r in self.__runners:
             if r.status() == Status.ON:
                 events = r.leader_events()
+                if len(events) == 0:
+                    return
                 # check if events are from the current epoch
                 if epoch_start <= max(events) <= self.__epoch_end_time:
                     self.__leader_events = events
