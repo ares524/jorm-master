@@ -398,7 +398,7 @@ class Master:
         """
         for r in self.__runners:
             if r.status() == Status.OFF:
-                r.start()
+                r.restart()
 
     def __runners_sorted(self):
         """Return list of runner indexes sorted by their preference (best at index 0)
