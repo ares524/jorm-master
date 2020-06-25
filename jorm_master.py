@@ -112,7 +112,7 @@ class Runner:
                             self.stop()
                             self.__status = Status.OFF
                             break
-                        sleep(2)
+                        sleep(5)
             else:
                 self.__status = Status.OFF
 
